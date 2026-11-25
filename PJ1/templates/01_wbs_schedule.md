@@ -43,6 +43,6 @@ _상태는 예정 / 진행 중 / 완료 / 지연 중 하나로 적습니다._
 
 | 항목 | 내용 |
 | --- | --- |
-| 저장소 | _조 GitHub 저장소 주소_ |
-| 브랜치 규칙 | _예: main + 기능 브랜치_ |
+| 저장소 | https://github.com/Hyundai-OnDevice-AI-Study/Elevator-Safety-Vision-AI |
+| 브랜치 규칙 | main + 기능 브랜치 |
 | 연락 채널 | slack / github |
