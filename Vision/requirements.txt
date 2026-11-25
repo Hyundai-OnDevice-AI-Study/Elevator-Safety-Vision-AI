@@ -1,0 +1,4 @@
+numpy>=1.24
+opencv-python-headless>=4.8   # --show 화면이 필요하면 opencv-python 으로 바꾸기
+onnxruntime>=1.16
+pytest>=7

@@ -1,0 +1,390 @@
+"""자세 해석 — 설계 문서 3장 ① (영상) 규칙의 참고 구현.
+
+PoseFrame(키포인트)을 시간 순서로 받아 사람마다 '자세 근거 수준'을 낸다.
+
+  수준 0 NORMAL  : 정상
+  수준 1 OBSERVE : 주의 관찰   — 뻗은 팔이 문틈의 한 점을 계속 가리킴
+  수준 2 CAUTION : 경계       — 손은 문틈, 몸은 문 반대쪽으로 기울여 버팀
+  수준 3 DANGER  : 위험       — 걷지 않는데 몸이 문쪽으로 끌려감(손이 먼저 움직임)
+                               또는 문에 닿은 손이 문틈을 따라 빠르게 미끄러짐
+  낮춤          : 손이 버튼 패널에 있거나 등을 기대는 자세면 정상 쪽으로 낮춤
+
+설계 원칙
+  - 모든 거리는 '몸통 길이(어깨 중점~엉덩이 중점)'로 나눈 값이다. 사람이 카메라에서
+    멀거나 가까워도, 미니어처 영상이든 실제 영상이든 같은 임계값을 쓸 수 있다.
+  - 모든 속도는 '몸통 길이/초'. 프레임 수가 아니라 실제 시간(ts)으로 계산하므로
+    FPS가 흔들려도 결과가 같다.
+  - 임계값은 전부 rules.json 의 "pose" 섹션에서 읽는다. 코드에 숫자를 박지 않는다.
+  - 한 프레임의 판단으로 바로 DANGER를 내지 않는다. 최근 n 프레임 중 k 번 이상일 때만(투표).
+"""
+from __future__ import annotations
+
+import math
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Deque, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from ..messages import PoseFrame
+from ..vision import keypoints as K
+from ..vision.door_geometry import DoorGeometry
+from .smoothing import KeypointSmoother
+
+LEVEL_NAMES = {0: "NORMAL", 1: "OBSERVE", 2: "CAUTION", 3: "DANGER"}
+
+DEFAULT_RULES = {
+    "kp_conf": 0.35,          # 이보다 신뢰도가 낮은 키포인트는 없는 것으로 본다
+    "window_s": 1.5,          # 판단에 쓰는 최근 시간 창
+    "vel_window_s": 0.5,      # 속도 계산 구간
+    "near_gap": 0.35,         # 손목-문틈 거리 / 몸통  (이 안이면 '문틈 근처')
+    "contact": 0.15,          # 손목-문틈 거리 / 몸통  (이 안이면 '문에 닿음')
+    "arm_extended_deg": 145,  # 팔꿈치 각도가 이 이상이면 '뻗은 팔'
+    "reach_min": 0.25,        # (어깨-문틈 거리) - (손목-문틈 거리) / 몸통. 팔을 문쪽으로 내민 정도
+    "dwell_s": 0.8,           # 같은 점을 가리키는 최소 지속 시간
+    "dwell_jitter": 0.10,     # 그동안 손목이 움직인 범위 / 몸통
+    "lean_away": 0.20,        # 상체 기울기(sin) — 문 반대쪽으로 이만큼 기울면 '버팀'
+    "brace_s": 0.4,           # 버팀 자세 최소 지속 시간
+    "drag_speed": 0.5,        # 엉덩이가 문쪽으로 움직이는 속도 / (몸통/초)
+    "walk_rel_ankle": 0.6,    # 두 발목의 상대 속도 / (몸통/초)  — 이 이상이면 '걷는 중'
+    "stumble_overrides_walking": True,  # 손이 문틈에 닿은 채 발을 내딛으면 걷기가 아니라 끌림
+    "onset_disp": 0.12,       # '움직이기 시작'으로 보는 누적 이동량 / 몸통
+    "slide_speed": 0.9,       # 문틈을 따라 손목이 미끄러지는 속도 / (몸통/초)
+    "pull_dir_deg": 40,       # 어깨→손목 방향과 '문틈 쪽' 사이 각도. 이 이하면 팔이 문쪽으로 뻗어 있음
+    "pull_hold_s": 0.4,       # 그 자세가 이만큼 유지되면 '팔이 문쪽으로 당겨짐' (목줄·끈 끼임)
+    "pull_hold_ratio": 0.8,   # 유지 구간 중 이 비율 이상의 프레임이 조건을 만족해야 함
+    "back_lean_dist": 0.25,   # 어깨 중점이 문틈에서 이 안이면 '등을 기댐' 후보
+    "vote_k": 3,
+    "vote_n": 5,
+    "lower_on_button_panel": True,
+    "track_timeout_s": 1.0,
+    "smooth": True,           # One Euro 필터로 키포인트 떨림 제거
+    "smooth_min_cutoff": 1.5,
+    "smooth_beta": 5.0,
+}
+
+
+# --------------------------------------------------------------- 기하 도우미
+def _pt(kp: np.ndarray, i: int, conf: float) -> Optional[np.ndarray]:
+    return kp[i, :2] if kp[i, 2] >= conf else None
+
+
+def _mid(a, b):
+    if a is None or b is None:
+        return a if b is None else b
+    return (a + b) / 2
+
+
+def elbow_angle(kp: np.ndarray, arm: Tuple[int, int, int], conf: float) -> Optional[float]:
+    s, e, w = (_pt(kp, i, conf) for i in arm)
+    if s is None or e is None or w is None:
+        return None
+    v1, v2 = s - e, w - e
+    c = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-9)
+    return math.degrees(math.acos(float(np.clip(c, -1, 1))))
+
+
+def slope(ts: np.ndarray, vs: np.ndarray) -> float:
+    """최소제곱 기울기(단위/초). 점이 2개 미만이면 0."""
+    if len(ts) < 2 or ts[-1] - ts[0] < 1e-3:
+        return 0.0
+    t = ts - ts.mean()
+    return float(np.dot(t, vs - vs.mean()) / (np.dot(t, t) + 1e-12))
+
+
+# --------------------------------------------------------------- 프레임별 측정값
+@dataclass
+class Measure:
+    ts: float
+    torso: float                         # 몸통 길이 (정규화 좌표)
+    d_hip: Optional[float]               # 엉덩이 중점 → 문틈 거리 / 몸통 (+: 카 안쪽)
+    d_sh: Optional[float]                # 어깨 중점
+    wrists: Dict[str, Tuple[float, float]]   # arm → (문틈 거리/몸통, 문틈 따라 위치/몸통)
+    elbows: Dict[str, Optional[float]]       # arm → 팔꿈치 각도
+    arm_dir: Dict[str, float]                # arm → 어깨→손목 방향과 문틈 쪽 사이 각도(도)
+    lean: Optional[float]                # 상체 기울기 sin. +: 문 반대쪽(카 안쪽)으로 기욺
+    ankles: Dict[str, Tuple[float, float]]   # 발목 좌표 / 몸통 (걷기 판정용)
+    in_panel: bool
+
+
+def measure(kp: np.ndarray, ts: float, door: DoorGeometry, conf: float) -> Optional[Measure]:
+    sh = _mid(_pt(kp, K.L_SHOULDER, conf), _pt(kp, K.R_SHOULDER, conf))
+    hip = _mid(_pt(kp, K.L_HIP, conf), _pt(kp, K.R_HIP, conf))
+    if sh is None or hip is None:
+        return None                     # 몸통이 안 보이면 이 프레임은 판단하지 않는다
+    torso = float(np.linalg.norm(sh - hip))
+    if torso < 1e-3:
+        return None
+    wrists, elbows, arm_dir, in_panel = {}, {}, {}, False
+    for name, arm in K.ARMS.items():
+        w = _pt(kp, arm[2], conf)
+        sp = _pt(kp, arm[0], conf)
+        if w is not None:
+            wrists[name] = (door.signed_distance(w) / torso, door.along(w) / torso)
+            in_panel |= door.in_button_panel(w)
+            if sp is not None:
+                v = w - sp
+                c = float(np.dot(v, -door.normal) / (np.linalg.norm(v) + 1e-9))
+                arm_dir[name] = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+        elbows[name] = elbow_angle(kp, arm, conf)
+    up = sh - hip
+    lean = float(np.dot(up, door.normal) / (np.linalg.norm(up) + 1e-9))
+    ankles = {}
+    for name, i in (("left", K.L_ANKLE), ("right", K.R_ANKLE)):
+        a = _pt(kp, i, conf)
+        if a is not None:
+            ankles[name] = (float(a[0]) / torso, float(a[1]) / torso)
+    return Measure(ts, torso, door.signed_distance(hip) / torso, door.signed_distance(sh) / torso,
+                   wrists, elbows, arm_dir, lean, ankles, in_panel)
+
+
+# --------------------------------------------------------------- 사람별 상태
+@dataclass
+class TrackState:
+    hist: Deque[Measure] = field(default_factory=deque)
+    votes: Dict[str, Deque[bool]] = field(default_factory=dict)
+    last_ts: float = 0.0
+    smoother: Optional[KeypointSmoother] = None
+
+
+@dataclass
+class PersonAssessment:
+    track_id: int
+    level: int
+    reasons: List[str]
+    flags: Dict[str, bool]
+    debug: Dict[str, float]
+
+
+@dataclass
+class PoseAssessment:
+    ts: float
+    level: int
+    level_name: str
+    persons: List[PersonAssessment]
+    pet_near_door: bool = False
+
+
+class PoseAnalyzer:
+    def __init__(self, door: DoorGeometry, rules: Optional[dict] = None):
+        self.door = door
+        self.r = {**DEFAULT_RULES, **(rules or {})}
+        self.tracks: Dict[int, TrackState] = {}
+        self._pet_since: Optional[float] = None
+
+    # ------------------------------------------------------------ 공개 API
+    def update(self, pf: PoseFrame, pet_rules: Optional[dict] = None) -> PoseAssessment:
+        persons = []
+        aspect = pf.img_w / pf.img_h if pf.img_w > 0 and pf.img_h > 0 else 1.0
+        door = self._door_for(aspect)
+        for p in pf.persons:
+            kp = np.asarray(p.keypoints, dtype=np.float32)
+            kp[:, 0] *= aspect                    # 정규화 좌표 → 가로·세로 같은 단위
+            st = self.tracks.setdefault(p.track_id, TrackState())
+            if self.r["smooth"]:
+                if st.smoother is None:
+                    st.smoother = KeypointSmoother(self.r["smooth_min_cutoff"], self.r["smooth_beta"])
+                kp = st.smoother(kp, pf.ts)
+            m = measure(kp, pf.ts, door, self.r["kp_conf"])
+            st.last_ts = pf.ts
+            if m is not None:
+                st.hist.append(m)
+                while st.hist and pf.ts - st.hist[0].ts > self.r["window_s"]:
+                    st.hist.popleft()
+            persons.append(self._assess(p.track_id, st))
+        # 오래 안 보인 사람 정리
+        for tid in [t for t, s in self.tracks.items() if pf.ts - s.last_ts > self.r["track_timeout_s"]]:
+            del self.tracks[tid]
+
+        pet_near = self._pets(pf, pet_rules or {})
+        level = max([a.level for a in persons], default=0)
+        return PoseAssessment(pf.ts, level, LEVEL_NAMES[level], persons, pet_near)
+
+    def _door_for(self, aspect: float) -> DoorGeometry:
+        if getattr(self, "_door_aspect", None) != aspect:
+            self._door_aspect, self._door_scaled = aspect, self.door.scaled(aspect)
+        return self._door_scaled
+
+    def reset(self) -> None:
+        """문이 열리면 판정을 초기화한다 (설계 문서 3장 ③)."""
+        self.tracks.clear()
+        self._pet_since = None
+
+    # ------------------------------------------------------------ 내부
+    def _vote(self, st: TrackState, key: str, value: bool) -> bool:
+        q = st.votes.setdefault(key, deque(maxlen=self.r["vote_n"]))
+        q.append(value)
+        return sum(q) >= self.r["vote_k"]
+
+    def _recent(self, st: TrackState, seconds: float) -> List[Measure]:
+        if not st.hist:
+            return []
+        t_end = st.hist[-1].ts
+        return [m for m in st.hist if t_end - m.ts <= seconds]
+
+    def _assess(self, tid: int, st: TrackState) -> PersonAssessment:
+        r = self.r
+        dbg: Dict[str, float] = {}
+        flags = {k: False for k in ("pointing", "bracing", "dragged", "sliding", "arm_pulled",
+                                    "button_panel", "leaning_on_door", "walking")}
+        if not st.hist:
+            return PersonAssessment(tid, 0, ["no_valid_pose"], flags, dbg)
+        cur = st.hist[-1]
+        vw = self._recent(st, r["vel_window_s"])
+        ts = np.array([m.ts for m in vw])
+
+        # 문틈에 가장 가까운 손 (없으면 None)
+        near_arm = None
+        if cur.wrists:
+            near_arm = min(cur.wrists, key=lambda a: abs(cur.wrists[a][0]))
+            dbg["wrist_d"] = round(cur.wrists[near_arm][0], 3)
+        hand_near = near_arm is not None and abs(cur.wrists[near_arm][0]) <= r["near_gap"]
+        hand_contact = near_arm is not None and abs(cur.wrists[near_arm][0]) <= r["contact"]
+
+        # ---- 걷기 여부: 두 발목이 서로 다르게 움직이면 걷는 중
+        rel = [m for m in vw if "left" in m.ankles and "right" in m.ankles]
+        walking = False
+        if len(rel) >= 3:
+            dx = np.array([m.ankles["left"][0] - m.ankles["right"][0] for m in rel])
+            dy = np.array([m.ankles["left"][1] - m.ankles["right"][1] for m in rel])
+            t_rel = np.array([m.ts for m in rel])
+            rel_speed = math.hypot(slope(t_rel, dx), slope(t_rel, dy))
+            # 발 교차 왕복은 기울기가 0에 가까울 수 있으므로 변화 범위도 함께 본다
+            span = (dx.max() - dx.min()) / max(t_rel[-1] - t_rel[0], 1e-3)
+            dbg["ankle_rel"] = round(max(rel_speed, span), 3)
+            walking = max(rel_speed, span) >= r["walk_rel_ankle"]
+        flags["walking"] = walking
+
+        # ---- 엉덩이 속도 (문쪽 = d 감소 = 음수 기울기)
+        hip_pts = [(m.ts, m.d_hip) for m in vw if m.d_hip is not None]
+        hip_v = -slope(np.array([a for a, _ in hip_pts]), np.array([b for _, b in hip_pts])) if hip_pts else 0.0
+        dbg["hip_v_to_door"] = round(hip_v, 3)
+
+        # ---- 손이 먼저 움직였나 (window 전체)
+        hand_first = self._hand_first(st) if near_arm else False
+        dbg["hand_first"] = float(hand_first)
+
+        # ---- 규칙 ①-3: 걷지 않는데 몸이 문쪽으로 끌려감
+        # 끌려가는 사람은 비틀거리며 발을 내딛는다 → '걷는 중'으로 보이지만,
+        # 손이 문틈에 붙은 채로 몸이 문쪽으로 빨려 가면 걷기가 아니라 끌림으로 본다.
+        stumble = walking and hand_contact and r["stumble_overrides_walking"]
+        dragged_now = (hip_v >= r["drag_speed"] and (not walking or stumble) and hand_near and
+                       (hand_first or hand_contact))
+        flags["dragged"] = self._vote(st, "dragged", dragged_now)
+
+        # ---- 규칙 ①-4: 문에 닿은 손이 문틈을 따라 빠르게 미끄러짐
+        slide_now = False
+        if near_arm and hand_contact:
+            pts = [(m.ts, m.wrists[near_arm][1]) for m in vw if near_arm in m.wrists]
+            # 손을 문틈으로 '가져가는' 동작과 구분: 속도 구간 내내 문에 닿아 있어야 한다
+            touching = all(near_arm in m.wrists and abs(m.wrists[near_arm][0]) <= r["contact"] for m in vw)
+            if len(pts) >= 2 and touching:
+                sv = abs(slope(np.array([a for a, _ in pts]), np.array([b for _, b in pts])))
+                dbg["slide_v"] = round(sv, 3)
+                slide_now = sv >= r["slide_speed"]
+        flags["sliding"] = self._vote(st, "sliding", slide_now)
+
+        # ---- 규칙 ①-2: 손은 문틈, 몸은 문 반대쪽으로 기울여 버팀
+        brace_win = self._recent(st, r["brace_s"])
+        brace_now = (hand_near and cur.lean is not None and cur.lean >= r["lean_away"] and
+                     len(brace_win) >= 2 and
+                     all(m.lean is not None and m.lean >= r["lean_away"] * 0.8 for m in brace_win))
+        dbg["lean"] = round(cur.lean or 0.0, 3)
+        flags["bracing"] = self._vote(st, "bracing", brace_now)
+
+        # ---- 규칙 ①-1: 뻗은 팔이 문틈의 한 점을 계속 가리킴
+        point_now = False
+        # 팔을 그냥 내리고 있어도 팔꿈치는 펴져 있으므로, 손이 어깨보다 문쪽으로 나가 있어야 '가리킴'
+        reach = (cur.d_sh - cur.wrists[near_arm][0]) if (near_arm and cur.d_sh is not None) else 0.0
+        dbg["reach"] = round(reach, 3)
+        if (near_arm and hand_near and reach >= r["reach_min"]
+                and (cur.elbows.get(near_arm) or 0) >= r["arm_extended_deg"]):
+            dw = [m for m in self._recent(st, r["dwell_s"]) if near_arm in m.wrists]
+            if dw and dw[-1].ts - dw[0].ts >= r["dwell_s"] * 0.9:
+                alongs = np.array([m.wrists[near_arm][1] for m in dw])
+                dists = np.array([m.wrists[near_arm][0] for m in dw])
+                # 최대-최소(ptp)는 키포인트 떨림 한 번에 크게 튄다 → 10~90 백분위 폭을 쓴다
+                rng = lambda v: float(np.percentile(v, 90) - np.percentile(v, 10))
+                jitter = max(rng(alongs), rng(dists))
+                dbg["point_jitter"] = round(float(jitter), 3)
+                point_now = jitter <= r["dwell_jitter"]
+        flags["pointing"] = self._vote(st, "pointing", point_now)
+
+        # ---- 팔이 문쪽으로 당겨짐 (목줄·끈이 문에 끼어 팽팽해진 상태)
+        # 손이 문틈에서 멀어도(끈 길이만큼) 팔은 문쪽으로 곧게 뻗어 있다. 거리 대신 '방향'을 본다.
+        def pulled(m: Measure) -> Optional[str]:
+            for arm in m.arm_dir:
+                if (m.arm_dir[arm] <= r["pull_dir_deg"] and (m.elbows.get(arm) or 0) >= r["arm_extended_deg"]
+                        and m.d_sh is not None and arm in m.wrists and m.wrists[arm][0] < m.d_sh):
+                    return arm
+            return None
+        hold = self._recent(st, r["pull_hold_s"])
+        if hold and hold[-1].ts - hold[0].ts >= r["pull_hold_s"] * 0.8:
+            ratio = sum(pulled(m) is not None for m in hold) / len(hold)
+            # 버튼을 누르는 손은 패널에 머문다. 당겨지는 손은 패널 앞을 지나갈 뿐이다.
+            panel_dwell = sum(m.in_panel for m in hold) / len(hold) >= 0.5
+            flags["arm_pulled"] = ratio >= r["pull_hold_ratio"] and not panel_dwell
+        if near_arm and cur.arm_dir.get(near_arm) is not None:
+            dbg["arm_dir"] = round(cur.arm_dir[near_arm], 1)
+
+        # ---- 낮춤 조건
+        flags["button_panel"] = cur.in_panel
+        # 등을 기댐: 어깨가 문틈에 붙어 있고, 손이 몸보다 문쪽으로 나가 있지 않음
+        hands_behind = all(d >= (cur.d_sh or 0) - 0.05 for d, _ in cur.wrists.values())
+        flags["leaning_on_door"] = (cur.d_sh is not None and abs(cur.d_sh) <= r["back_lean_dist"]
+                                    and hands_behind and not flags["pointing"])
+
+        level, reasons = 0, []
+        if flags["dragged"]:
+            level, reasons = 3, reasons + ["dragged_toward_door"]
+        if flags["sliding"]:
+            level, reasons = 3, reasons + ["hand_sliding_along_gap"]
+        if level < 3 and flags["bracing"]:
+            level, reasons = 2, reasons + ["bracing_against_door"]
+        if level < 2 and flags["arm_pulled"] and cur.lean is not None and cur.lean >= r["lean_away"]:
+            level, reasons = 2, reasons + ["bracing_against_pull"]      # 문쪽으로 당겨진 팔 + 몸은 반대로 버팀
+        if level < 1 and flags["arm_pulled"]:
+            level, reasons = 1, reasons + ["arm_pulled_toward_door"]
+        if level < 2 and flags["pointing"]:
+            level, reasons = 1, reasons + ["arm_fixed_on_gap"]
+        if (level in (1, 2) and r["lower_on_button_panel"] and not flags["arm_pulled"]
+                and (flags["button_panel"] or flags["leaning_on_door"])):
+            level -= 1
+            reasons.append("lowered:button_panel_or_back_lean")
+        return PersonAssessment(tid, level, reasons, flags, dbg)
+
+    def _hand_first(self, st: TrackState) -> bool:
+        """창 안에서 손목이 엉덩이보다 먼저 문쪽으로 움직이기 시작했는가."""
+        r = self.r
+        h = list(st.hist)
+        arms = [a for a in K.ARMS if all(a in m.wrists for m in h[-3:])]
+        if not arms or len(h) < 3:
+            return False
+
+        def onset(vals: List[Optional[float]]) -> Optional[int]:
+            base = next((v for v in vals if v is not None), None)
+            if base is None:
+                return None
+            for i, v in enumerate(vals):
+                if v is not None and base - v >= r["onset_disp"]:
+                    return i
+            return None
+
+        hip_on = onset([m.d_hip for m in h])
+        for a in arms:
+            w_on = onset([m.wrists[a][0] if a in m.wrists else None for m in h])
+            # 손목이 처음부터 문에 닿아 있었으면(이미 끼인 상태) 손이 먼저인 것으로 본다
+            caught = all(a in m.wrists and abs(m.wrists[a][0]) <= r["contact"] for m in h[:3])
+            if caught or (w_on is not None and (hip_on is None or w_on <= hip_on)):
+                return True
+        return False
+
+    def _pets(self, pf: PoseFrame, pr: dict) -> bool:
+        """2차: 반려동물이 문 주변 영역에 일정 시간 이상 머무르면 True."""
+        near = any(p.in_door_zone and p.score >= pr.get("min_score", 0.4) for p in pf.pets)
+        if not near:
+            self._pet_since = None
+            return False
+        if self._pet_since is None:
+            self._pet_since = pf.ts
+        return pf.ts - self._pet_since >= pr.get("dwell_s", 0.5)

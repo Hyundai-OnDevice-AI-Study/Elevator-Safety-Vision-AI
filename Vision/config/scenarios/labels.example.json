@@ -1,0 +1,10 @@
+[
+  {"name": "normal_ride_01", "poses": "out/normal_ride_01.jsonl", "vision_config": "config/vision.json",
+   "expected_max_level": 0},
+  {"name": "lean_back_01", "poses": "out/lean_back_01.jsonl", "vision_config": "config/vision.json",
+   "expected_max_level": 0},
+  {"name": "brace_01", "poses": "out/brace_01.jsonl", "vision_config": "config/vision.json",
+   "expected_max_level": 2},
+  {"name": "drag_hand_01", "poses": "out/drag_hand_01.jsonl", "vision_config": "config/vision.json",
+   "expected_max_level": 3, "event_start_s": 2.0}
+]

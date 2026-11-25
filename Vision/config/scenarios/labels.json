@@ -1,0 +1,5 @@
+[
+  {"name": "cam03_leash_drag", "poses": "out/cam03_leash_drag.jsonl", "vision_config": "config/vision_cam03.json",
+   "expected_max_level": 3, "event_start_s": 4.0,
+   "_note": "0~1s 개가 문 밖으로 나감, ~1.2s 문 닫힘(개는 밖), ~4.5s 목줄이 팽팽해지며 손이 문틈으로 끌림, ~6.0s 몸이 문쪽으로 확 끌리고 휴대폰 떨어뜨림, ~7s 무릎 꿇고 두 손으로 버팀. 시각은 눈으로 본 대략값이니 프레임 단위로 다시 확인할 것"}
+]

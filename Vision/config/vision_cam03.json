@@ -1,0 +1,29 @@
+{
+  "_comment": "Higgsfield 'CAM_03 엘리베이터 3호기' 목줄 끼임 영상(1280x720) 기준. 천장 모서리 광각 CCTV, 문을 왼쪽 앞에서 비스듬히 봄.",
+  "vision": {
+    "video": "videos/cam03_leash_drag.mp4",
+    "pose_model": "models/yolo11n-pose_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.4,
+    "iou_thr": 0.5,
+    "max_persons": 5,
+    "threads": 4,
+    "realtime": true,
+    "loop": false,
+    "resize_width": 640
+  },
+  "pet": {
+    "enabled": true,
+    "model": "models/yolo11n_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.35,
+    "every_n": 3
+  },
+  "door": {
+    "gap_p1": [0.676, 0.18],
+    "gap_p2": [0.609, 0.855],
+    "zone_width": 0.10,
+    "button_panel": [0.488, 0.29, 0.523, 0.52],
+    "inside_point": [0.35, 0.60]
+  }
+}
