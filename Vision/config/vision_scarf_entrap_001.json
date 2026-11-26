@@ -1,0 +1,43 @@
+{
+  "_comment": "scarf_entrap_001.mp4 전용 설정. 정면에 가까운 시점. 사람은 문 오른쪽 옆에 서 있음. 문틈은 여러 프레임 중간값 화면에서 어두운 틈의 가운데를 직선으로 맞춘 값.",
+  "vision": {
+    "video": "videos/scarf/scarf_entrap_001.mp4",
+    "pose_model": "models/yolo11n-pose_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.4,
+    "iou_thr": 0.5,
+    "max_persons": 5,
+    "threads": 4,
+    "realtime": true,
+    "loop": false,
+    "resize_width": 640
+  },
+  "pet": {
+    "enabled": true,
+    "model": "models/yolo11n_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.35,
+    "every_n": 3
+  },
+  "door": {
+    "gap_p1": [
+      0.4909,
+      0.17
+    ],
+    "gap_p2": [
+      0.4908,
+      0.82
+    ],
+    "zone_width": 0.1,
+    "button_panel": [
+      0.232,
+      0.54,
+      0.272,
+      0.67
+    ],
+    "inside_point": [
+      0.75,
+      0.85
+    ]
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "_comment": "leash_entrap_002.mp4 전용 설정. CAM_04 구도 (002/005/006 공용). 문틈은 여러 프레임 중간값 화면에서 어두운 틈의 가운데를 직선으로 맞춘 값.",
+  "vision": {
+    "video": "videos/leash/leash_entrap_002.mp4",
+    "pose_model": "models/yolo11n-pose_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.4,
+    "iou_thr": 0.5,
+    "max_persons": 5,
+    "threads": 4,
+    "realtime": true,
+    "loop": false,
+    "resize_width": 640
+  },
+  "pet": {
+    "enabled": true,
+    "model": "models/yolo11n_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.35,
+    "every_n": 3
+  },
+  "door": {
+    "gap_p1": [
+      0.365,
+      0.1
+    ],
+    "gap_p2": [
+      0.4066,
+      0.72
+    ],
+    "zone_width": 0.1,
+    "button_panel": [
+      0.515,
+      0.32,
+      0.55,
+      0.46
+    ],
+    "inside_point": [
+      0.6,
+      0.85
+    ]
+  },
+  "_ignore_zones_suggested": {
+    "_note": "화면 오른쪽 검은 테두리(어안 렌즈 가장자리)가 점수 0.40~0.41의 사람으로 잡힘. 팀 코드의 무시 영역 키로 옮겨 쓰세요. [x1,y1,x2,y2] 정규화.",
+    "right_edge": [
+      0.93,
+      0.0,
+      1.0,
+      1.0
+    ]
+  }
+}

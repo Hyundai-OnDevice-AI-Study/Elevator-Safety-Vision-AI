@@ -1,0 +1,43 @@
+{
+  "_comment": "cam03_leash_drag.mp4 전용 설정. CAM_03 구도. 문틈은 여러 프레임 중간값 화면에서 어두운 틈의 가운데를 직선으로 맞춘 값.",
+  "vision": {
+    "video": "videos/leash/cam03_leash_drag.mp4",
+    "pose_model": "models/yolo11n-pose_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.4,
+    "iou_thr": 0.5,
+    "max_persons": 5,
+    "threads": 4,
+    "realtime": true,
+    "loop": false,
+    "resize_width": 640
+  },
+  "pet": {
+    "enabled": true,
+    "model": "models/yolo11n_320.onnx",
+    "input_size": 320,
+    "conf_thr": 0.35,
+    "every_n": 3
+  },
+  "door": {
+    "gap_p1": [
+      0.6835,
+      0.18
+    ],
+    "gap_p2": [
+      0.608,
+      0.86
+    ],
+    "zone_width": 0.1,
+    "button_panel": [
+      0.488,
+      0.3,
+      0.522,
+      0.52
+    ],
+    "inside_point": [
+      0.35,
+      0.65
+    ]
+  }
+}
