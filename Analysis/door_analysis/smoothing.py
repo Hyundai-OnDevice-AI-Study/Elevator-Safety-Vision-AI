@@ -44,12 +44,45 @@ class OneEuroFilter:
 
 
 class KeypointSmoother:
-    """(17, 3) 키포인트 배열 중 x, y 만 평활화. 신뢰도 낮은 점은 이전 값 유지 안 함(그대로 통과)."""
+    """(17, 3) 키포인트의 x, y 를 관절마다 따로 평활화한다.
 
-    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.5):
-        self.f = OneEuroFilter(min_cutoff, beta)
+    v0.4 에서 가져온 두 가지:
+      - 신뢰도 게이트: conf < min_conf 인 관절은 필터에 넣지 않는다 (튀는 값이 필터 상태를 오염시키지 않게).
+        그 관절은 입력 그대로 내보내고, 어차피 measure() 에서 '없는 점'으로 버려진다.
+      - 끊김 후 초기화: 어떤 관절이 max_gap_s 보다 오래 안 보였다가 다시 나타나면, 그 관절만
+        필터를 새로 시작한다. 예전 위치와 이어 붙이면 가짜 '빠른 이동'이 생긴다.
+    """
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.5, d_cutoff: float = 1.0,
+                 min_conf: float = 0.0, max_gap_s: float = 0.3):
+        self.min_cutoff, self.beta, self.d_cutoff = min_cutoff, beta, d_cutoff
+        self.min_conf, self.max_gap_s = min_conf, max_gap_s
+        self.x_prev: Optional[np.ndarray] = None      # (17, 2)
+        self.dx_prev: Optional[np.ndarray] = None     # (17, 2)
+        self.t_seen: Optional[np.ndarray] = None      # (17,) 마지막으로 필터에 넣은 시각
 
     def __call__(self, kp: np.ndarray, t: float) -> np.ndarray:
+        kp = np.asarray(kp, dtype=np.float32)
         out = kp.copy()
-        out[:, :2] = self.f(kp[:, :2], t)
+        n = len(kp)
+        if self.x_prev is None:
+            self.x_prev = np.zeros((n, 2), np.float32)
+            self.dx_prev = np.zeros((n, 2), np.float32)
+            self.t_seen = np.full(n, -np.inf)
+        for i in range(n):
+            if kp[i, 2] < self.min_conf:
+                continue                                   # 신뢰도 낮음: 상태 건드리지 않음
+            x = kp[i, :2]
+            dt = t - self.t_seen[i]
+            if not (0.0 < dt <= self.max_gap_s):           # 처음 보거나, 오래 끊겼거나, 시간이 거꾸로
+                self.x_prev[i], self.dx_prev[i] = x, 0.0
+            else:
+                dx = (x - self.x_prev[i]) / dt
+                a_d = float(_alpha(np.float32(self.d_cutoff), dt))
+                dx_hat = a_d * dx + (1 - a_d) * self.dx_prev[i]
+                a = _alpha(self.min_cutoff + self.beta * np.abs(dx_hat), dt)
+                self.x_prev[i] = a * x + (1 - a) * self.x_prev[i]
+                self.dx_prev[i] = dx_hat
+            self.t_seen[i] = t
+            out[i, :2] = self.x_prev[i]
         return out

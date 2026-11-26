@@ -16,10 +16,19 @@
     "walk_rel_ankle": 0.6,
     "stumble_overrides_walking": true,
     "onset_disp": 0.12,
-    "slide_speed": 0.9,
+    "slide_speed": 2.0,
+    "slide_window_s": 0.3,
+    "slide_vote_k": 2,
+    "slide_contact_min": -1.0,
+    "slide_contact_max": 0.3,
     "pull_dir_deg": 40,
     "pull_hold_s": 0.4,
     "pull_hold_ratio": 0.8,
+    "pull_brace_lean": 0.1,
+    "pull_drag_speed": 0.3,
+    "pull_memory_s": 1.0,
+    "collapse_recent_s": 1.0,
+    "collapse_jump": 0.3,
     "back_lean_dist": 0.25,
     "vote_k": 3,
     "vote_n": 5,
@@ -27,7 +36,22 @@
     "track_timeout_s": 1.0,
     "smooth": true,
     "smooth_min_cutoff": 1.5,
-    "smooth_beta": 5.0
+    "smooth_beta": 5.0,
+    "stabilize": true,
+    "stab_min_on_s": [
+      0.0,
+      0.2,
+      0.2,
+      0.0
+    ],
+    "stab_hold_s": [
+      0.0,
+      1.0,
+      1.5,
+      2.0
+    ],
+    "smooth_max_gap_s": 0.3,
+    "torso_median_n": 31
   },
   "pet": {
     "min_score": 0.4,
