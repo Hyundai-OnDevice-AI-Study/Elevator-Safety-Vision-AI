@@ -1,0 +1,429 @@
+#include <Arduino.h>
+
+// ========================================
+// GPIO 핀 설정
+// ========================================
+const int MOTOR1_POS = 13;
+const int MOTOR1_NEG = 16;
+
+const int MOTOR2_POS = 14;
+const int MOTOR2_NEG = 17;
+
+const int PIN_SERVO = 18;
+
+const int PIN_SELECT = 35;
+const int PIN_EXECUTE = 34;
+
+const int PIN_ADC = 32;
+
+// ========================================
+// PWM 설정
+// ========================================
+const int MOTOR_FREQ = 500;
+const int SERVO_FREQ = 50;
+
+const int BITS = 10;
+const int MAX_DUTY = (1 << BITS) - 1;
+
+// ========================================
+// 엘리베이터 설정
+// ========================================
+const int MIN_FLOOR = 1;
+const int MAX_FLOOR = 5;
+
+const int OPEN_ANGLE = 178;
+const int CLOSE_ANGLE = 2;
+
+const int UP_SPEED = 1000;
+const int DOWN_SPEED = -1000;
+
+// ADC 층 감지 기준
+const int FLOOR_THRESHOLD = 500;
+const int FLOOR_RELEASE = 600;
+
+// 최대 이동 시간
+const unsigned long TIMEOUT_MS = 15000;
+
+// ========================================
+// 전역 변수
+// ========================================
+int currentFloor = 1;
+int targetFloor = 1;
+int moveFloor = 0;
+
+bool fault = false;
+
+// ========================================
+// DC 모터 제어 함수
+// ========================================
+void control_motor(int pwm_positive,
+                   int pwm_negative,
+                   int speed) {
+
+    speed = constrain(speed, -MAX_DUTY, MAX_DUTY);
+
+    if (speed >= 0) {
+
+        ledcWrite(pwm_negative, 0);
+        ledcWrite(pwm_positive, speed);
+
+    } else {
+
+        ledcWrite(pwm_positive, 0);
+        ledcWrite(pwm_negative, -speed);
+    }
+}
+
+// ========================================
+// 서보모터 각도 제어
+// ========================================
+void servo_write_deg(int deg) {
+
+    deg = constrain(deg, 0, 180);
+
+    int duty = (int)(deg * 99.0 / 180 + 25);
+
+    ledcWrite(PIN_SERVO, duty);
+}
+
+// ========================================
+// 문 개폐 제어
+// ========================================
+void door_control() {
+
+    Serial.println("Door Open");
+
+    servo_write_deg(OPEN_ANGLE);
+    delay(2000);
+
+    Serial.println("Door Close");
+
+    servo_write_deg(CLOSE_ANGLE);
+    delay(500);
+}
+
+// ========================================
+// 오류 발생 시 모터 정지
+// ========================================
+bool stop_with_error() {
+
+    control_motor(MOTOR1_POS, MOTOR1_NEG, 0);
+
+    fault = true;
+
+    Serial.println("ERROR: Motor Timeout");
+    Serial.println("Current position may be incorrect.");
+    Serial.println("Check position before restarting.");
+
+    return false;
+}
+
+// ========================================
+// 초기화 함수
+// 실제 1층에 위치한 상태에서 전원 인가
+// ========================================
+void initialize_floor() {
+
+    control_motor(MOTOR1_POS, MOTOR1_NEG, 0);
+
+    currentFloor = MIN_FLOOR;
+    targetFloor = MIN_FLOOR;
+    moveFloor = 0;
+
+    fault = false;
+
+    Serial.println("Initialization Complete");
+
+    Serial.print("Current Floor: ");
+    Serial.println(currentFloor);
+}
+
+// ========================================
+// 엘리베이터 상승 함수
+// ========================================
+bool move_up() {
+
+    Serial.println("Moving Up");
+
+    unsigned long startTime = millis();
+    unsigned long lastPrint = 0;
+
+    // 출발층 중복 감지 방지
+    bool detected = analogRead(PIN_ADC) < FLOOR_RELEASE;
+
+    control_motor(MOTOR1_POS, MOTOR1_NEG, UP_SPEED);
+
+    while (moveFloor > 0) {
+
+        // 타임아웃 확인
+        if (millis() - startTime >= TIMEOUT_MS) {
+
+            return stop_with_error();
+        }
+
+        int adcValue = analogRead(PIN_ADC);
+
+        // 새로운 층 감지
+        if (adcValue < FLOOR_THRESHOLD && !detected) {
+
+            detected = true;
+
+            moveFloor--;
+            currentFloor++;
+
+            Serial.println("Floor Detected!");
+
+            Serial.print("Current Floor: ");
+            Serial.println(currentFloor);
+
+            Serial.print("Remaining Floor: ");
+            Serial.println(moveFloor);
+        }
+
+        // 기존 층에서 벗어남
+        else if (adcValue >= FLOOR_RELEASE) {
+
+            detected = false;
+        }
+
+        // 디버깅 출력
+        if (millis() - lastPrint >= 100) {
+
+            lastPrint = millis();
+
+            Serial.print("ADC: ");
+            Serial.print(adcValue);
+
+            Serial.print(" | Detected: ");
+            Serial.print(detected);
+
+            Serial.print(" | Remaining: ");
+            Serial.println(moveFloor);
+        }
+
+        delay(10);
+    }
+
+    control_motor(MOTOR1_POS, MOTOR1_NEG, 0);
+
+    Serial.println("Up Complete");
+
+    return true;
+}
+
+// ========================================
+// 엘리베이터 하강 함수
+// ========================================
+bool move_down() {
+
+    Serial.println("Moving Down");
+
+    unsigned long startTime = millis();
+    unsigned long lastPrint = 0;
+
+    // 출발층 중복 감지 방지
+    bool detected = analogRead(PIN_ADC) < FLOOR_RELEASE;
+
+    control_motor(MOTOR1_POS, MOTOR1_NEG, DOWN_SPEED);
+
+    while (moveFloor < 0) {
+
+        // 타임아웃 확인
+        if (millis() - startTime >= TIMEOUT_MS) {
+
+            return stop_with_error();
+        }
+
+        int adcValue = analogRead(PIN_ADC);
+
+        // 새로운 층 감지
+        if (adcValue < FLOOR_THRESHOLD && !detected) {
+
+            detected = true;
+
+            moveFloor++;
+            currentFloor--;
+
+            Serial.println("Floor Detected!");
+
+            Serial.print("Current Floor: ");
+            Serial.println(currentFloor);
+
+            Serial.print("Remaining Floor: ");
+            Serial.println(moveFloor);
+        }
+
+        // 기존 층에서 벗어남
+        else if (adcValue >= FLOOR_RELEASE) {
+
+            detected = false;
+        }
+
+        // 디버깅 출력
+        if (millis() - lastPrint >= 100) {
+
+            lastPrint = millis();
+
+            Serial.print("ADC: ");
+            Serial.print(adcValue);
+
+            Serial.print(" | Detected: ");
+            Serial.print(detected);
+
+            Serial.print(" | Remaining: ");
+            Serial.println(moveFloor);
+        }
+
+        delay(10);
+    }
+
+    control_motor(MOTOR1_POS, MOTOR1_NEG, 0);
+
+    Serial.println("Down Complete");
+
+    return true;
+}
+
+// ========================================
+// 초기 설정
+// ========================================
+void setup() {
+
+    Serial.begin(115200);
+
+    // 버튼 설정
+    pinMode(PIN_SELECT, INPUT);
+    pinMode(PIN_EXECUTE, INPUT);
+
+    // DC 모터 PWM 설정
+    ledcAttach(MOTOR1_POS, MOTOR_FREQ, BITS);
+    ledcAttach(MOTOR1_NEG, MOTOR_FREQ, BITS);
+
+    ledcAttach(MOTOR2_POS, MOTOR_FREQ, BITS);
+    ledcAttach(MOTOR2_NEG, MOTOR_FREQ, BITS);
+
+    // 서보모터 PWM 설정
+    ledcAttach(PIN_SERVO, SERVO_FREQ, BITS);
+
+    // ADC 설정
+    analogReadResolution(12);
+    analogSetPinAttenuation(PIN_ADC, ADC_11db);
+
+    // 모든 DC 모터 정지
+    control_motor(MOTOR1_POS, MOTOR1_NEG, 0);
+    control_motor(MOTOR2_POS, MOTOR2_NEG, 0);
+
+    // 초기 문 닫힘
+    servo_write_deg(CLOSE_ANGLE);
+
+    delay(1000);
+
+    // 현재층 변수 초기화
+    initialize_floor();
+}
+
+// ========================================
+// 메인 반복문
+// ========================================
+void loop() {
+
+    // 오류 발생 시 추가 동작 금지
+    if (fault) {
+
+        delay(100);
+        return;
+    }
+
+    // ------------------------------------
+    // GPIO 35: 목표층 선택
+    // ------------------------------------
+    if (digitalRead(PIN_SELECT) == HIGH) {
+
+        targetFloor++;
+
+        if (targetFloor > MAX_FLOOR) {
+
+            targetFloor = MIN_FLOOR;
+        }
+
+        Serial.print("Current Floor: ");
+        Serial.println(currentFloor);
+
+        Serial.print("Target Floor: ");
+        Serial.println(targetFloor);
+
+        delay(300);
+
+        // 버튼 중복 입력 방지
+        while (digitalRead(PIN_SELECT) == HIGH) {
+
+            delay(10);
+        }
+    }
+
+    // ------------------------------------
+    // GPIO 34: 이동 실행
+    // ------------------------------------
+    else if (digitalRead(PIN_EXECUTE) == HIGH) {
+
+        moveFloor = targetFloor - currentFloor;
+
+        Serial.println("====================");
+
+        Serial.print("Current Floor: ");
+        Serial.println(currentFloor);
+
+        Serial.print("Target Floor: ");
+        Serial.println(targetFloor);
+
+        Serial.print("Move Floor: ");
+        Serial.println(moveFloor);
+
+        bool success = true;
+
+        // 상승
+        if (moveFloor > 0) {
+
+            success = move_up();
+        }
+
+        // 하강 (1층 포함)
+        else if (moveFloor < 0) {
+
+            success = move_down();
+        }
+
+        // 현재층과 목표층이 동일
+        else {
+
+            Serial.println("Already at Target Floor");
+        }
+
+        // 정상 도착 시 문 개폐
+        if (success) {
+
+            Serial.print("Arrival Floor: ");
+            Serial.println(currentFloor);
+
+            door_control();
+        }
+
+        delay(300);
+
+        // 버튼 중복 입력 방지
+        while (digitalRead(PIN_EXECUTE) == HIGH) {
+
+            delay(10);
+        }
+    }
+
+    // ------------------------------------
+    // 대기 상태
+    // ------------------------------------
+    else {
+
+        control_motor(MOTOR1_POS, MOTOR1_NEG, 0);
+    }
+
+    delay(10);
+}
