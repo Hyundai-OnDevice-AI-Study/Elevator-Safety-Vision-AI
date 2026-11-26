@@ -22,6 +22,11 @@ PJ1/        프로젝트 관리 문서
 
 ## 노트북에서 영상으로 결과 보기 (`run_video.py`)
 
+### 환경 설정   
+```bash
+pip install -r Vision/requirements.txt   
+```
+
 영상 하나를 골라 **비전 → 해석 → 상태 머신**을 한 번에 돌리고, 화면에 결과를 겹쳐 본다.
 
 ```bash
@@ -71,8 +76,6 @@ python run_video.py Vision/videos/leash/leash_entrap_004.mp4 --config Vision/con
 ## 바로 해 보기 (테스트)
 
 ```bash
-pip install -r Vision/requirements.txt
-
 cd Vision   && python -m pytest -q && python -m door_vision.vision_process --sim dragged --print && cd ..
 cd Analysis && python -m pytest -q && python tools/evaluate.py --sim && cd ..
 cd common   && python -m pytest -q && cd ..
