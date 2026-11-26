@@ -22,7 +22,7 @@ def draw_overlay(img: np.ndarray, pf: PoseFrame, door: DoorGeometry, kp_conf: fl
     x1, y1, x2, y2 = door.button_panel
     if x1 < x2:
         cv2.rectangle(out, P((x1, y1)), P((x2, y2)), (255, 200, 0), 1)
-    for pg, col in [(pg, (255, 200, 0)) for pg in door.exclude] + [(pg, (255, 128, 0)) for pg in door.ignore]:
+    for pg, col in [(pg, (255, 200, 0)) for pg in door.exclude] + [(pg, (0, 128, 255)) for pg in door.ignore]:
         cv2.polylines(out, [np.array([P(p) for p in pg], np.int32)], True, col, 1)   # 하늘: 버튼, 주황: 무시
     levels = {a.track_id: a.level for a in assessment.persons} if assessment else {}
     for p in pf.persons:
