@@ -1,0 +1,67 @@
+{
+  "_comment": "임계값은 코드가 아니라 여기에 둔다 (설계 문서 3장). pose/pet 은 비전·AI 쪽 초안, pressure/state 는 해석팀이 미니어처에서 직접 눌러보며 채울 자리.",
+  "pose": {
+    "kp_conf": 0.35,
+    "window_s": 1.5,
+    "vel_window_s": 0.5,
+    "near_gap": 0.35,
+    "contact": 0.15,
+    "arm_extended_deg": 145,
+    "reach_min": 0.25,
+    "dwell_s": 0.8,
+    "dwell_jitter": 0.1,
+    "lean_away": 0.2,
+    "brace_s": 0.4,
+    "drag_speed": 0.5,
+    "walk_rel_ankle": 0.6,
+    "stumble_overrides_walking": true,
+    "onset_disp": 0.12,
+    "slide_speed": 2.0,
+    "slide_window_s": 0.3,
+    "slide_vote_k": 2,
+    "slide_contact_min": -1.0,
+    "slide_contact_max": 0.3,
+    "pull_dir_deg": 40,
+    "pull_hold_s": 0.4,
+    "pull_hold_ratio": 0.8,
+    "pull_brace_lean": 0.1,
+    "pull_drag_speed": 0.3,
+    "pull_memory_s": 1.0,
+    "collapse_recent_s": 1.0,
+    "collapse_jump": 0.3,
+    "back_lean_dist": 0.25,
+    "vote_k": 3,
+    "vote_n": 5,
+    "lower_on_button_panel": true,
+    "track_timeout_s": 1.0,
+    "smooth": true,
+    "smooth_min_cutoff": 1.5,
+    "smooth_beta": 5.0,
+    "stabilize": true,
+    "stab_min_on_s": [
+      0.0,
+      0.2,
+      0.2,
+      0.0
+    ],
+    "stab_hold_s": [
+      0.0,
+      1.0,
+      1.5,
+      2.0
+    ],
+    "smooth_max_gap_s": 0.3,
+    "torso_median_n": 31
+  },
+  "pet": {
+    "min_score": 0.4,
+    "dwell_s": 0.5
+  },
+  "pressure": {
+    "_todo": "해석팀: 미니어처에서 측정 후 결정 (아직 미정)",
+    "rise_rate_g_per_s": null,
+    "sustain_s": null,
+    "spike_max_s": null
+  },
+  "vision_timeout_s": 1.0
+}
