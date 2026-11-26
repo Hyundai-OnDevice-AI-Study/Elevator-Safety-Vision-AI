@@ -14,17 +14,21 @@ import pytest  # noqa: E402
 
 from door_analysis.pose_features import PoseAnalyzer  # noqa: E402
 from door_common.door_geometry import DoorGeometry  # noqa: E402
-from door_common.fake_pose import EXPECTED, SCENARIOS, SIM_DOOR_CONFIG, generate  # noqa: E402
+from door_analysis.scoring import passed  # noqa: E402
+from door_common.fake_pose import EXPECTED, SCENARIOS, SIM_DOOR_CONFIG, door_config, generate  # noqa: E402
 from door_common.messages import PoseFrame  # noqa: E402
 
 DOOR = DoorGeometry.from_config(SIM_DOOR_CONFIG)
 
 
-@pytest.mark.parametrize("name", list(SCENARIOS))
+@pytest.mark.parametrize("name", [n if "known_gap" not in EXPECTED[n] else
+                                  pytest.param(n, marks=pytest.mark.xfail(reason=EXPECTED[n]["known_gap"], strict=True))
+                                  for n in SCENARIOS])
 @pytest.mark.parametrize("fps", [8, 15, 30])
 @pytest.mark.parametrize("seed", [0, 1])
 def test_scenarios(name, fps, seed):
-    a = PoseAnalyzer(DOOR)
+    """저장소 Sim 9종 + v0.4 합성 8종. 통과 기준은 evaluate.py 와 같은 scoring.passed."""
+    a = PoseAnalyzer(DoorGeometry.from_config(door_config(name)))
     levels, flags = [], set()
     for pf in generate(name, fps=fps, seed=seed, noise=0.004):
         r = a.update(pf)
@@ -32,7 +36,7 @@ def test_scenarios(name, fps, seed):
         for p in r.persons:
             flags |= {k for k, v in p.flags.items() if v}
     exp = EXPECTED[name]
-    assert max(l for _, l in levels) == exp["max_level"]
+    assert passed(exp["max_level"], max(l for _, l in levels))
     if "danger_after" in exp:      # 사건 전에는 DANGER 가 나오면 안 된다
         assert all(l < 3 for t, l in levels if t < exp["danger_after"])
     if "flag" in exp:
@@ -119,12 +123,15 @@ def _run(fn, duration=3.5, fps=15, seed=0, noise=0.003):
 
 
 def _pulled_far(t):
-    """줄 길이만큼 떨어진 손이 문쪽으로 당겨짐(팔 곧게) + 몸은 뒤로 버팀 → 1.5s 부터 몸이 문쪽으로 끌려감.
-    손은 문틈에서 몸통 0.5배 이상 떨어져 있어서 예전 '손이 문틈 근처' 끌림 규칙으로는 못 잡던 경우 (v0.4 S6)."""
+    """줄이 팽팽해지며 손이 먼저 문쪽으로 끌려감(0.3~0.8s, 몸은 그대로) + 몸은 뒤로 버팀
+    → 1.5s 부터 몸이 문쪽으로 끌려감. 손은 문틈에서 몸통 0.5배 이상 떨어져 있어서
+    예전 '손이 문틈 근처' 끌림 규칙으로는 못 잡던 경우 (v0.4 S6)."""
     b = Body(hip=(0.46 + 0.07 * _smooth(t, 1.5, 2.5), 0.62))
     b.lean(0.15 * _smooth(t, 0.3, 0.8))
     sh = b.abs_xy(K.L_SHOULDER)
-    b.reach(sh + np.array([0.17, 0.02]))           # 문쪽으로 거의 수평, 곧게 뻗은 팔
+    hang = b.abs_xy(K.L_WRIST)
+    pull = _smooth(t, 0.3, 0.8)
+    b.reach(hang + (sh + np.array([0.17, 0.02]) - hang) * pull)   # 내린 팔 → 문쪽으로 곧게 (손이 먼저)
     return b
 
 
@@ -225,3 +232,16 @@ def test_torso_length_uses_median():
     short = Body(hip=(0.5, 0.62), T=0.10)           # 한 프레임만 몸통이 절반으로 보임 (숙임)
     m = measure(np.array(short.keypoints(rng, 0.0), np.float32), 1.0, DOOR, 0.35, hist)
     assert abs(m.torso - 0.20) < 0.01
+
+
+def test_person_in_ignore_zone_is_skipped():
+    """거울에 비친 사람(발이 ignore 영역 안)은 판단하지 않는다 (v0.4 ignore)."""
+    cfg = {"door": {**SIM_DOOR_CONFIG["door"], "ignore": [[(0.0, 0.7), (0.35, 0.7), (0.35, 1.0), (0.0, 1.0)]]}}
+    a = PoseAnalyzer(DoorGeometry.from_config(cfg))
+    mirror = next(generate("dragged", fps=15))
+    kp = np.array(mirror.persons[0].keypoints)
+    kp[:, 0] -= 0.30                                   # 화면 왼쪽(거울 영역)으로 옮김
+    real = mirror.persons[0]
+    pf = PoseFrame(ts=0.0, frame_id=0, persons=[Person(7, 0.9, [0, 0, 1, 1], kp.tolist()), real])
+    r = a.update(pf)
+    assert [p.track_id for p in r.persons] == [real.track_id]

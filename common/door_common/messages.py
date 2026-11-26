@@ -85,8 +85,9 @@ class PressureSample:
 @dataclass
 class DeviceEvent:
     ts: float
-    kind: str                         # "door" | "car" | "fault"
-    value: str                        # door: open/closing/closed, car: stopped/moving, fault: 원인
+    kind: str                         # "door" | "car" | "fault" | "operator"
+    value: str                        # door: open/closing/closed, car: stopped/moving,
+                                      # fault: 원인 문자열 또는 "clear"(고장 해제), operator: "reset"(DANGER_MOVING 해제)
     type: str = "DeviceEvent"
     v: int = SCHEMA_VERSION
 
@@ -116,8 +117,12 @@ class StateChange:
 @dataclass
 class ActionCommand:
     ts: float
-    target: str                       # door | car | buzzer | beacon | voice
-    action: str                       # open / block_start / emergency_stop / on / off / yellow / red ...
+    target: str                       # door | car | buzzer | beacon | voice | notify
+    action: str                       # door: open
+                                      # car: block_start(출발 보류) / block_end / emergency_stop / emergency_reset
+                                      # buzzer: on(params.pattern=short|continuous) / off
+                                      # beacon: yellow(params.pattern=blink 가능) / red / off
+                                      # voice: say(params.text)   notify: emergency / fault (1차: 출력만)
     params: Dict[str, Any] = field(default_factory=dict)
     type: str = "ActionCommand"
     v: int = SCHEMA_VERSION

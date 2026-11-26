@@ -57,3 +57,19 @@ def test_door_signed_distance():
     assert DOOR.signed_distance((0.9, 0.5)) < 0           # 문 바깥
     assert DOOR.signed_distance((0.72, 0.3)) == pytest.approx(0, abs=1e-6)
     assert DOOR.in_button_panel((0.6, 0.4))
+
+
+def test_polygons_exclude_and_ignore():
+    from door_common.door_geometry import point_in_polygon
+    sq = [(0.1, 0.1), (0.3, 0.1), (0.3, 0.3), (0.1, 0.3)]
+    assert point_in_polygon((0.2, 0.2), sq) and not point_in_polygon((0.4, 0.2), sq)
+    cfg = {"door": {**SIM_DOOR_CONFIG["door"], "exclude": [sq], "ignore": [[(0.0, 0.8), (0.3, 0.8), (0.3, 1.0), (0.0, 1.0)]]}}
+    d = DoorGeometry.from_config(cfg)
+    assert d.in_button_panel((0.2, 0.2))                       # 다각형 패널
+    assert d.in_button_panel((0.60, 0.40))                     # 기존 사각형 패널도 그대로
+    kp = [[0.5, 0.5, 0.9]] * 15 + [[0.15, 0.9, 0.9], [0.2, 0.9, 0.9]]   # 발목이 무시 영역 안
+    assert d.in_ignore(kp)
+    kp2 = [[0.5, 0.5, 0.9]] * 15 + [[0.5, 0.9, 0.9], [0.55, 0.9, 0.9]]
+    assert not d.in_ignore(kp2)
+    s = d.scaled(1.78)                                          # 화면비 보정해도 같은 판정
+    assert s.in_button_panel((0.2 * 1.78, 0.2))
