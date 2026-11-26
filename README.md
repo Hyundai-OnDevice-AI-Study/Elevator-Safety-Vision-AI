@@ -7,7 +7,7 @@
 common/     공유 (팀 합의로만 수정)   메시지 정의 · 전송(Queue/UDP/jsonl) · 문틈 기하 · 키포인트 번호 · 가짜 시나리오
 Vision/     비전 팀                   영상 → YOLO-pose(ONNX) → 추적 → PoseFrame
 Analysis/   해석·조건판별 팀          PoseFrame → 자세 규칙 → 수준(0~3)  (이후 state 상태 머신도 여기)
-Control/    센싱·제어 팀              HX711 압력, 헥사보드(ESP32) 문·카 제어  (준비 중)
+Control/    센싱·제어 팀              ESP32: 문·카 제어 / Pi: HX711 압력·경보 출력  (준비 중)
 PJ1/        프로젝트 관리 문서
 ```
 
