@@ -12,11 +12,14 @@ labels.json 형식 (영상마다 한 줄)
   - expected_max_level : 이 영상에서 나와야 할 최고 수준 (0 정상 / 1 주의 / 2 경계 / 3 위험)
   - event_start_s      : 실제 끌림이 시작된 시각(영상 시작 기준, 초). 있으면 감지 지연을 계산
 
-지표
-  - 시나리오 통과율 : 최고 수준이 기대값과 같은가
+지표 (통과 기준은 v0.4 run_offline 방식)
+  - 통과 기준       : 기대 3(위험) → 최고 수준 3 / 기대 2(경계) → 정확히 2 / 기대 0·1 → 기대 이하
   - 미탐(FN)        : 위험(3)이어야 하는데 3이 안 나옴 → 가장 치명적
-  - 오탐(FP)        : 위험이 아닌데 3이 나옴 → 엘리베이터가 불필요하게 멈춤
+  - 오탐(FP)        : 위험이 아닌데 3이 나옴, 또는 사건 시작(event_start_s) 전에 3이 나옴
+                      → 엘리베이터가 불필요하게 멈춤
   - 감지 지연       : event_start_s 부터 처음 DANGER 까지 걸린 시간
+  - 단계별 첫 시각   : 처음 OBSERVE / CAUTION / DANGER 가 나온 시각
+수준은 안정화(rules.json pose.stabilize)를 거친 값으로 채점한다.
 """
 import argparse
 import json
@@ -31,40 +34,54 @@ from door_common.transport import read_jsonl  # noqa: E402
 
 
 def score(frames, door, rules):
+    """반환: (최고 수준, {수준: 처음 나온 시각}, 근거 목록, [(시각, 수준)])"""
     a = PoseAnalyzer(door, rules.get("pose"))
     t0 = frames[0].ts if frames else 0.0
-    mx, first, reasons, timeline = 0, None, set(), []
+    mx, firsts, reasons, timeline = 0, {}, set(), []
     for pf in frames:
         if not isinstance(pf, PoseFrame):
             continue
         r = a.update(pf, rules.get("pet"))
-        timeline.append((round(pf.ts - t0, 2), r.level))
+        t = pf.ts - t0
+        timeline.append((round(t, 2), r.level))
         mx = max(mx, r.level)
         for p in r.persons:
-            reasons |= set(p.reasons)
-        if r.level == 3 and first is None:
-            first = pf.ts - t0
-    return mx, first, sorted(reasons), timeline
+            reasons |= {x for x in p.reasons if not x.startswith("hold:")}
+        for lv in range(1, r.level + 1):
+            firsts.setdefault(lv, t)
+    return mx, firsts, sorted(reasons), timeline
+
+
+def passed(exp: int, got: int) -> bool:
+    if exp == 3:
+        return got == 3
+    if exp == 2:
+        return got == 2          # 버팀은 버팀으로: 위험으로 올라가도, 주의로 내려가도 실패
+    return got <= exp            # 정상·주의 기대: 그보다 높으면 실패 (낮은 건 허용)
 
 
 def report(rows):
-    print(f"\n{'scenario':16s} {'expect':>6s} {'got':>4s} {'first_DANGER':>12s} {'delay':>6s}  result  reasons")
+    fmt = lambda v: ("%.2fs" % v) if v is not None else "-"
+    print(f"\n{'scenario':16s} {'expect':>6s} {'got':>4s} {'OBSERVE':>8s} {'CAUTION':>8s} {'DANGER':>8s} "
+          f"{'delay':>6s}  result  reasons")
     fn = fp = ok = 0
     delays = []
-    for name, exp, got, first, ev, reasons in rows:
-        res = "PASS" if got == exp else "FAIL"
+    for name, exp, got, firsts, ev, reasons in rows:
+        first = firsts.get(3)
+        early = first is not None and ev is not None and first < ev
+        res = "PASS" if passed(exp, got) and not early else "FAIL"
         ok += res == "PASS"
         if exp == 3 and got < 3:
             fn += 1
             res += " (미탐)"
-        if exp < 3 and got == 3:
+        if (exp < 3 and got == 3) or early:
             fp += 1
-            res += " (오탐)"
-        d = (first - ev) if (first is not None and ev is not None) else None
+            res += " (사건 전 위험)" if early else " (오탐)"
+        d = (first - ev) if (first is not None and ev is not None and not early) else None
         if d is not None:
             delays.append(d)
-        print(f"{name:16s} {exp:6d} {got:4d} {('%.2fs' % first) if first is not None else '-':>12s} "
-              f"{('%.2fs' % d) if d is not None else '-':>6s}  {res:12s} {','.join(reasons)}")
+        print(f"{name:16s} {exp:6d} {got:4d} {fmt(firsts.get(1)):>8s} {fmt(firsts.get(2)):>8s} {fmt(first):>8s} "
+              f"{fmt(d):>6s}  {res:12s} {','.join(reasons)}")
     print(f"\n통과 {ok}/{len(rows)}  미탐 {fn}  오탐 {fp}" +
           (f"  평균 감지 지연 {sum(delays) / len(delays):.2f}s (최대 {max(delays):.2f}s)" if delays else ""))
     return ok == len(rows)
@@ -87,9 +104,9 @@ def main():
         door = DoorGeometry.from_config(SIM_DOOR_CONFIG)
         for name in SCENARIOS:
             frames = list(generate(name, fps=a.fps, noise=a.noise))
-            mx, first, reasons, tl = score(frames, door, rules)
+            mx, firsts, reasons, tl = score(frames, door, rules)
             ev = EXPECTED[name].get("danger_after")
-            rows.append((name, EXPECTED[name]["max_level"], mx, first, ev, reasons))
+            rows.append((name, EXPECTED[name]["max_level"], mx, firsts, ev, reasons))
             if a.timeline:
                 print(name, tl)
     elif a.labels:
@@ -105,8 +122,8 @@ def main():
                       f"(전체 {len(frames)}프레임). 포즈 추정이 제대로 돌았는지 확인하세요.")
                 continue
             print(f"{item['name']}: {len(frames)}프레임 중 사람 검출 {n_person}프레임 ({n_person / len(frames):.0%})")
-            mx, first, reasons, tl = score(frames, DoorGeometry.from_config(cfg), rules)
-            rows.append((item["name"], item["expected_max_level"], mx, first, item.get("event_start_s"), reasons))
+            mx, firsts, reasons, tl = score(frames, DoorGeometry.from_config(cfg), rules)
+            rows.append((item["name"], item["expected_max_level"], mx, firsts, item.get("event_start_s"), reasons))
             if a.timeline:
                 print(item["name"], tl)
     else:
