@@ -63,10 +63,25 @@
     "dwell_s": 0.5
   },
   "pressure": {
-    "_todo": "해석팀: 미니어처에서 측정 후 결정 (아직 미정)",
-    "rise_rate_g_per_s": null,
-    "sustain_s": null,
-    "spike_max_s": null
+    "_todo": "해석팀: 미니어처에서 눌러 보며 결정 (아직 미정). threshold_g 가 null 이면 압력은 판단에 쓰지 않는다",
+    "threshold_g": null,
+    "sustain_s": 0.3,
+    "timeout_s": null
   },
-  "vision_timeout_s": 1.0
+  "vision_timeout_s": 1.0,
+  "state": {
+    "_comment": "상태 머신 (door_analysis/state.py). danger_moving_reset: manual(관리자 리셋) | door_open(문 열리면 해제)",
+    "danger_moving_reset": "manual",
+    "warning_hold_s": 1.5,
+    "danger_pose_level": 3,
+    "warning_pose_level": 2,
+    "warn_on_leaning": true,
+    "warn_on_pet_near_door": true,
+    "block_on_warning": [
+      "pose",
+      "pressure",
+      "pet"
+    ],
+    "notify_on_danger": true
+  }
 }
