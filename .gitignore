@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+*.egg-info/
+# 실행 결과물 (해석에 넘길 jsonl 은 Analysis/data/poses/ 에 커밋)
+out/
