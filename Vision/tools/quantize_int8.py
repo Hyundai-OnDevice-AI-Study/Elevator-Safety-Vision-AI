@@ -21,7 +21,7 @@ def frames_from(path: str, size: int, n: int = 100):
     files = sorted(glob.glob(os.path.join(path, "*.mp4"))) if os.path.isdir(path) else [path]
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from door_drag.vision.onnx_backend import letterbox, to_blob
+    from door_vision.onnx_backend import letterbox, to_blob
     out = []
     for f in files:
         cap = cv2.VideoCapture(f)

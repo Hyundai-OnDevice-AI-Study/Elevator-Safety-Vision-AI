@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from door_drag.vision.pose_estimator import PoseEstimator  # noqa: E402
+from door_vision.pose_estimator import PoseEstimator  # noqa: E402
 
 
 def cpu_temp() -> str:

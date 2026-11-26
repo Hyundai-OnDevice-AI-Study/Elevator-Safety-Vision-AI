@@ -6,7 +6,7 @@
   python tools/export_onnx.py --model yolo26n-pose.pt --imgsz 320 --nms-free   # YOLO26: NMS 없는 출력 (1, 300, 57)
 
 YOLO11 기본 출력은 (1, 56, N) 이라 NMS 를 코드에서 하고, YOLO26 --nms-free 출력은 (1, 300, 57) 이라 NMS 가 필요 없다.
-door_drag/vision/pose_estimator.py 는 두 형식을 모두 읽는다. 둘 다 변환해서 benchmark.py 로 비교해 볼 것.
+door_vision/pose_estimator.py 는 두 형식을 모두 읽는다. 둘 다 변환해서 benchmark.py 로 비교해 볼 것.
 
 결과 파일을 Pi 의 models/ 폴더로 복사한다. 파일명에 입력 크기를 붙여 둔다 (예: yolo11n-pose_320.onnx).
 
