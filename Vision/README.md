@@ -26,7 +26,7 @@ tools/
   export_onnx.py         [PC] .pt → .onnx 변환
   quantize_int8.py       [PC] INT8 양자화 (선택)
   benchmark.py           [Pi] FPS·지연 측정
-  draw_door_line.py      영상에서 문틈 선 클릭 → vision.json 저장
+  draw_door_line.py      영상에서 문틈 선·버튼 패널·카 안쪽 점 + 다각형(버튼 exclude / 거울 ignore) 클릭 → vision*.json 저장
 tests/test_vision.py     pytest (모델 없이)
 
 공유: ../common/door_common/  messages · transport · door_geometry · keypoints · fake_pose
@@ -55,7 +55,7 @@ python tools/export_onnx.py --model yolo11n.pt --imgsz 320        # 2차 반려�
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 
-python tools/draw_door_line.py --video videos/sample.mp4          # 문틈 선 지정
+python tools/draw_door_line.py --video videos/sample.mp4          # 문틈 선 지정 (거울이 있으면 m 키로 ignore 다각형)
 python tools/benchmark.py --models models/yolo11n-pose_320.onnx models/yolo11n-pose_416.onnx \
                           --video videos/sample.mp4 --threads 2 3 4
 python -m door_vision.vision_process --source videos/sample.mp4 --show --print
@@ -66,6 +66,7 @@ python -m door_vision.vision_process --source videos/drag_01.mp4 --record ../Ana
 
 ## 해석 팀과의 약속
 
+- **해석에 들어가는 PoseFrame 은 8fps 이상** (5fps 에서는 빠른 손 미끄러짐을 놓침, `Analysis/tools/stress.py` 결과).
 - 비전은 **사람이 없어도, 영상이 끊겨도** PoseFrame 을 계속 보냄 (`status`: ok / no_frame / error).
   해석은 `../Analysis/config/rules.json`의 `vision_timeout_s` 동안 PoseFrame 이 안 오면 **고장 → 출발 금지**.
 - 좌표는 전부 0~1 정규화. 시간은 `time.monotonic()` 초.

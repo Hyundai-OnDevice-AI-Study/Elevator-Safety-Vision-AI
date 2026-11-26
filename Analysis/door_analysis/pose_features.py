@@ -22,10 +22,16 @@ PoseFrame(키포인트)을 시간 순서로 받아 사람마다 '자세 근거 �
   - 출력 level 은 안정화(최소 지속·유지 시간)를 거친 값이고, raw_level 은 그 프레임의 순간 값이다.
     '문이 열릴 때까지 유지'는 상태 머신(state)이 맡는다.
 
+  - '걷지 않음 + 손이 먼저 움직임'이 끌림(비자발성)의 근거다. 발이 안 보이면 걷는지 모르므로
+    손 먼저 근거를 두 가지 다(속도 시작이 앞섬 + 굽힘→폄 전환) 요구한다.
+
 v0.4(룰 기반 엔진, 2026-11) 에서 가져온 것
-  스무딩 신뢰도 게이트·끊김 후 초기화, 몸통 길이 중앙값, 좌우 짝 조건, 팔 당김 → 끌림 순서 규칙(PULLED),
-  COLLAPSE, 미끄러짐 기준(2.0 torso/s, 0.3s 창, 문틈 너머 음수 거리 허용), 버튼 패널은 약한 단계만 낮춤,
-  수준 안정화(Stabilizer), 잠깐 안 보이는 사람도 안정 수준 유지.
+  1단계: 스무딩 신뢰도 게이트·끊김 후 초기화, 몸통 길이 중앙값, 좌우 짝 조건, 팔 당김 → 끌림 순서 규칙(PULLED),
+         COLLAPSE, 미끄러짐 기준(2.0 torso/s, 0.3s 창, 문틈 너머 음수 거리 허용), 버튼 패널은 약한 단계만 낮춤,
+         수준 안정화(Stabilizer), 잠깐 안 보이는 사람도 안정 수준 유지.
+  2단계: 걷기 판정(gait_rate: 문 방향 발목 간격이 바뀌는 횟수), 손 먼저 판정(속도 시작 0.1s 앞섬 /
+         굽힘→폄 전환), 거울 무시 영역(ignore)·버튼 다각형(exclude).
+  3단계(남음): 가상 pivot(팔 연장선과 문틈의 교점)으로 줄이 걸린 점과 그 미끄러짐 추적.
 """
 from __future__ import annotations
 
@@ -57,9 +63,14 @@ DEFAULT_RULES = {
     "lean_away": 0.20,        # 상체 기울기(sin) — 문 반대쪽으로 이만큼 기울면 '버팀'
     "brace_s": 0.4,           # 버팀 자세 최소 지속 시간
     "drag_speed": 0.5,        # 엉덩이가 문쪽으로 움직이는 속도 / (몸통/초)
-    "walk_rel_ankle": 0.6,    # 두 발목의 상대 속도 / (몸통/초)  — 이 이상이면 '걷는 중'
+    "gait_s": 1.5,            # 걷기 판정 창 (v0.4 gait)
+    "gait_amp": 0.05,         # 문 방향 발목 간격이 평균에서 이만큼(몸통 단위) 벗어나야 '한 발 내딛음'으로 셈
+    "gait_rate_max": 1.0,     # 초당 걸음 수가 이보다 많으면 '걷는 중'. 발이 안 보이면 '모름' → 더 엄격한 근거 요구
     "stumble_overrides_walking": True,  # 손이 문틈에 닿은 채 발을 내딛으면 걷기가 아니라 끌림
-    "onset_disp": 0.12,       # '움직이기 시작'으로 보는 누적 이동량 / 몸통
+    "onset_s": 2.5,           # '손이 먼저 움직였나'를 찾는 창 (v0.4)
+    "onset_speed": 0.3,       # 문쪽 속도가 이 이상(몸통/초)이 된 첫 시점 = 움직이기 시작
+    "order_lead_s": 0.1,      # 손 시작이 엉덩이 시작보다 이만큼 앞서야 '손이 먼저' (동시 = 몸 전체 이동)
+    "extend_from_bent_deg": 135,  # 팔꿈치가 이 이하(굽힘)였다가 arm_extended_deg 이상(폄)으로 바뀐 뒤 몸이 따라오면 '끌림 순서'
     "slide_speed": 2.0,       # 문틈을 따라 손목이 미끄러지는 속도 / (몸통/초). v0.4 실측: 정상 동작 최대 1.26, 사고 2.1~3.4
     "slide_window_s": 0.3,    # 미끄러짐 속도만 짧은 창으로 계산 (v0.4 hand_slide_s). 0.5초면 8fps 에서 평균에 묻힘
     "slide_vote_k": 2,        # 미끄러짐은 0.3~0.5초에 끝나는 짧은 사건 → n 프레임 중 2번이면 인정 (8fps 에서 3번은 못 채움)
@@ -117,6 +128,29 @@ def slope(ts: np.ndarray, vs: np.ndarray) -> float:
     return float(np.dot(t, vs - vs.mean()) / (np.dot(t, t) + 1e-12))
 
 
+def gait_rate(samples: List[Tuple[float, Optional[float]]], amp: float) -> Optional[float]:
+    """초당 걸음 수 (v0.4 _gait_rate). samples: [(ts, gait_sig)]. 보이는 점이 4개 미만이면 None(모름).
+
+    평균을 뺀 신호가 +amp 위와 -amp 아래를 오갈 때마다 1번 뒤집힘으로 세고, 뒤집힘 2번 = 1걸음.
+    """
+    pts = [(t, v) for t, v in samples if v is not None]
+    if len(pts) < 4:
+        return None
+    t = np.array([p[0] for p in pts])
+    v = np.array([p[1] for p in pts])
+    v = v - v.mean()
+    state = flips = 0
+    for x in v:
+        if x > amp and state <= 0:
+            flips += state != 0
+            state = 1
+        elif x < -amp and state >= 0:
+            flips += state != 0
+            state = -1
+    span = t[-1] - t[0]
+    return flips / (2.0 * span) if span > 0 else None
+
+
 # --------------------------------------------------------------- 프레임별 측정값
 @dataclass
 class Measure:
@@ -131,6 +165,7 @@ class Measure:
     ankles: Dict[str, Tuple[float, float]]   # 발목 좌표 / 몸통 (걷기 판정용)
     in_panel: bool
     d_ank: Optional[float] = None        # 두 발목 중점 → 문틈 거리 / 몸통 (두 발목 다 보일 때만)
+    gait_sig: Optional[float] = None     # (왼 발목 - 오른 발목) 의 문 방향 성분 / 몸통. 걸으면 +/- 로 번갈아 바뀜
 
 
 def measure(kp: np.ndarray, ts: float, door: DoorGeometry, conf: float,
@@ -177,8 +212,10 @@ def measure(kp: np.ndarray, ts: float, door: DoorGeometry, conf: float,
     d_hip = door.signed_distance(hip) / torso if (lh is not None and rh is not None) else None
     d_sh = door.signed_distance(sh) / torso if (ls is not None and rs is not None) else None
     la, ra = _pt(kp, K.L_ANKLE, conf), _pt(kp, K.R_ANKLE, conf)
-    d_ank = door.signed_distance((la + ra) / 2) / torso if (la is not None and ra is not None) else None
-    return Measure(ts, torso, d_hip, d_sh, wrists, elbows, arm_dir, lean, ankles, in_panel, d_ank)
+    both = la is not None and ra is not None
+    d_ank = door.signed_distance((la + ra) / 2) / torso if both else None
+    gait_sig = float(np.dot(la - ra, door.normal)) / torso if both else None
+    return Measure(ts, torso, d_hip, d_sh, wrists, elbows, arm_dir, lean, ankles, in_panel, d_ank, gait_sig)
 
 
 # --------------------------------------------------------------- 사람별 상태
@@ -192,9 +229,7 @@ class TrackState:
     stab: Optional[Stabilizer] = None
     pull_still_ts: Optional[float] = None   # 몸이 가만히 있는 동안 팔이 당겨져 있던 마지막 시각
     tension_ts: Optional[float] = None      # 마지막으로 '버팀'(수준 2)이었던 시각
-    stab: Optional[Stabilizer] = None
-    pull_still_ts: Optional[float] = None   # 몸이 가만히 있는 동안 팔이 당겨져 있던 마지막 시각
-    tension_ts: Optional[float] = None      # 마지막으로 '버팀'(수준 2)이었던 시각
+    speed_hist: Deque[tuple] = field(default_factory=deque)   # (ts, 엉덩이 문쪽 속도, {팔: 손목 문쪽 속도}, {팔: 팔꿈치 각도})
 
 
 @dataclass
@@ -228,7 +263,12 @@ class PoseAnalyzer:
         persons = []
         aspect = pf.img_w / pf.img_h if pf.img_w > 0 and pf.img_h > 0 else 1.0
         door = self._door_for(aspect)
+        visible = []
         for p in pf.persons:
+            # 거울·유리에 비친 사람(발이 무시 영역 안)은 판단하지 않는다 (v0.4 ignore)
+            if self.door.in_ignore(p.keypoints, self.r["kp_conf"]):
+                continue
+            visible.append(p)
             kp = np.asarray(p.keypoints, dtype=np.float32)
             kp[:, 0] *= aspect                    # 정규화 좌표 → 가로·세로 같은 단위
             st = self.tracks.setdefault(p.track_id, TrackState())
@@ -256,7 +296,7 @@ class PoseAnalyzer:
             persons.append(pa)
         # 이번 프레임에 안 보인 사람: 추적 타임아웃 전까지는 안정 수준을 계속 낸다 (v0.4 pipeline).
         # 끌려가며 가려지거나 검출이 한두 프레임 빠져도 DANGER 가 바로 사라지지 않게.
-        seen = {p.track_id for p in pf.persons}
+        seen = {p.track_id for p in visible}
         for tid, st in list(self.tracks.items()):
             if tid in seen:
                 continue
@@ -312,18 +352,13 @@ class PoseAnalyzer:
         hand_near = near_arm is not None and abs(cur.wrists[near_arm][0]) <= r["near_gap"]
         hand_contact = near_arm is not None and abs(cur.wrists[near_arm][0]) <= r["contact"]
 
-        # ---- 걷기 여부: 두 발목이 서로 다르게 움직이면 걷는 중
-        rel = [m for m in vw if "left" in m.ankles and "right" in m.ankles]
-        walking = False
-        if len(rel) >= 3:
-            dx = np.array([m.ankles["left"][0] - m.ankles["right"][0] for m in rel])
-            dy = np.array([m.ankles["left"][1] - m.ankles["right"][1] for m in rel])
-            t_rel = np.array([m.ts for m in rel])
-            rel_speed = math.hypot(slope(t_rel, dx), slope(t_rel, dy))
-            # 발 교차 왕복은 기울기가 0에 가까울 수 있으므로 변화 범위도 함께 본다
-            span = (dx.max() - dx.min()) / max(t_rel[-1] - t_rel[0], 1e-3)
-            dbg["ankle_rel"] = round(max(rel_speed, span), 3)
-            walking = max(rel_speed, span) >= r["walk_rel_ankle"]
+        # ---- 걷기 여부 (v0.4 gait): 문 방향 발목 간격이 +/- 로 번갈아 바뀌는 횟수
+        # 발목 속도로 보던 예전 방식은 무릎을 꿇거나 발목 키포인트가 튈 때 '걷는 중'으로 잘못 나왔다.
+        gait = gait_rate([(m.ts, m.gait_sig) for m in self._recent(st, r["gait_s"])], r["gait_amp"])
+        feet_visible = gait is not None
+        walking = feet_visible and gait > r["gait_rate_max"]
+        if gait is not None:
+            dbg["gait_rate"] = round(gait, 2)
         flags["walking"] = walking
 
         # ---- 엉덩이 속도 (문쪽 = d 감소 = 음수 기울기)
@@ -331,8 +366,10 @@ class PoseAnalyzer:
         hip_v = -slope(np.array([a for a, _ in hip_pts]), np.array([b for _, b in hip_pts])) if hip_pts else 0.0
         dbg["hip_v_to_door"] = round(hip_v, 3)
 
-        # ---- 손이 먼저 움직였나 (window 전체)
-        hand_first = self._hand_first(st) if near_arm else False
+        # ---- 손이 먼저 움직였나 (v0.4 order_ok / extend_then_follow)
+        # 발이 보이면 둘 중 하나, 발이 안 보이면(걷는지 모름) 둘 다 있어야 인정
+        order_ok, ext_follow, caught = self._hand_first(st, vw, hip_v)
+        hand_first = caught or ((order_ok or ext_follow) if feet_visible else (order_ok and ext_follow))
         dbg["hand_first"] = float(hand_first)
 
         # ---- 규칙 ①-3: 걷지 않는데 몸이 문쪽으로 끌려감
@@ -406,12 +443,17 @@ class PoseAnalyzer:
         # 줄이 팽팽해지는 동안(팔이 당겨짐) 몸은 아직 멈춰 있다가 → 그다음 몸이 문쪽으로 움직인다.
         # 이 '순서'가 비자발성의 근거다. 팔을 뻗은 채 몸 전체가 같이 움직이면(카메라 흔들림,
         # 그냥 문쪽으로 다가감) 팔이 당겨진 시점에 이미 몸이 움직이고 있으므로 걸러진다.
-        if flags["arm_pulled"] and hip_v < r["pull_drag_speed"]:
+        # 순서 기록은 0.4초 유지 확인(arm_pulled) 전의 '이 프레임 팔 상태'로도 한다.
+        # 5fps 에서는 유지 확인이 끝나는 시점에 몸이 이미 움직이고 있어 순서를 놓쳤다.
+        if (flags["arm_pulled"] or pulled(cur) is not None) and hip_v < r["pull_drag_speed"]:
             st.pull_still_ts = cur.ts
         pull_recent = st.pull_still_ts is not None and cur.ts - st.pull_still_ts <= r["pull_memory_s"]
         # 걷는 중이면 인정하지 않는다: 목줄을 쥔 채 개를 앞세워 걸어 나가는 정상 동작과 구분.
         # 비틀거리며 끌려가는 경우는 COLLAPSE(아래)와 손 접촉 끌림(dragged)이 맡는다.
-        pulled_drag_now = pull_recent and hip_v >= r["pull_drag_speed"] and not walking
+        # v0.4 '비자발성': 걷지 않음 + 손이 먼저 움직임(hand_first). 걷기 판정은 걸음을 세므로
+        # 걷기 시작한 첫 한두 걸음은 놓친다 → 손·몸이 같이 움직이는 정상 하차를 hand_first 가 걸러 준다.
+        # 발이 안 보이면 hand_first 가 더 엄격해진다 (손 먼저 + 굽힘→폄 둘 다).
+        pulled_drag_now = pull_recent and hip_v >= r["pull_drag_speed"] and not walking and hand_first
         flags["pulled_drag"] = self._vote(st, "pulled_drag", pulled_drag_now)
 
         # ---- 버티다 무너짐 (v0.4 COLLAPSE)
@@ -456,31 +498,55 @@ class PoseAnalyzer:
             reasons.append("lowered:button_panel_or_back_lean")
         return PersonAssessment(tid, level, reasons, flags, dbg)
 
-    def _hand_first(self, st: TrackState) -> bool:
-        """창 안에서 손목이 엉덩이보다 먼저 문쪽으로 움직이기 시작했는가."""
-        r = self.r
-        h = list(st.hist)
-        arms = [a for a in K.ARMS if all(a in m.wrists for m in h[-3:])]
-        if not arms or len(h) < 3:
-            return False
+    def _hand_first(self, st: TrackState, vw: List[Measure], hip_v: float) -> Tuple[bool, bool, bool]:
+        """손이 몸보다 먼저 문쪽으로 움직였는가 (v0.4 features.update 의 onset 방식).
 
-        def onset(vals: List[Optional[float]]) -> Optional[int]:
-            base = next((v for v in vals if v is not None), None)
-            if base is None:
-                return None
-            for i, v in enumerate(vals):
-                if v is not None and base - v >= r["onset_disp"]:
-                    return i
+        반환 (order_ok, extend_then_follow, caught)
+          order_ok          : 손목의 문쪽 속도가 onset_speed 를 넘은 시점이 엉덩이보다 order_lead_s 이상 앞섬
+          extend_then_follow: 팔꿈치가 굽힘→폄으로 바뀐 '전환'이 있고, 그 뒤에 엉덩이가 움직이기 시작함
+                              (처음부터 펴져 있던 팔은 인정하지 않음)
+          caught            : 처음부터 손목이 문에 닿아 있었음 (이미 끼인 상태)
+        """
+        r = self.r
+        cur = st.hist[-1]
+        wv = {}
+        for a in K.ARMS:
+            pts = [(m.ts, m.wrists[a][0]) for m in vw if a in m.wrists]
+            if len(pts) >= 2:
+                wv[a] = -slope(np.array([p[0] for p in pts]), np.array([p[1] for p in pts]))
+        st.speed_hist.append((cur.ts, hip_v if len(vw) >= 2 else None, wv, dict(cur.elbows)))
+        while st.speed_hist and cur.ts - st.speed_hist[0][0] > r["onset_s"]:
+            st.speed_hist.popleft()
+
+        def onset(get) -> Optional[float]:
+            for t, hv, w, _ in st.speed_hist:
+                v = get(hv, w)
+                if v is not None and v >= r["onset_speed"]:
+                    return t
             return None
 
-        hip_on = onset([m.d_hip for m in h])
-        for a in arms:
-            w_on = onset([m.wrists[a][0] if a in m.wrists else None for m in h])
-            # 손목이 처음부터 문에 닿아 있었으면(이미 끼인 상태) 손이 먼저인 것으로 본다
-            caught = all(a in m.wrists and abs(m.wrists[a][0]) <= r["contact"] for m in h[:3])
-            if caught or (w_on is not None and (hip_on is None or w_on <= hip_on)):
-                return True
-        return False
+        hip_on = onset(lambda hv, w: hv)
+        order_ok = ext_follow = False
+        for a in K.ARMS:
+            w_on = onset(lambda hv, w: w.get(a))
+            if w_on is not None and hip_on is not None and w_on + r["order_lead_s"] <= hip_on:
+                order_ok = True
+            ext_t, was_bent = None, False
+            for t, _, _, el in st.speed_hist:
+                e = el.get(a)
+                if e is None:
+                    continue
+                if e <= r["extend_from_bent_deg"]:
+                    was_bent = True
+                elif was_bent and e >= r["arm_extended_deg"]:
+                    ext_t = t
+                    break
+            if ext_t is not None and hip_on is not None and ext_t <= hip_on:
+                ext_follow = True
+        h = list(st.hist)
+        caught = len(h) >= 3 and any(all(a in m.wrists and abs(m.wrists[a][0]) <= r["contact"] for m in h[:3])
+                                     for a in K.ARMS)
+        return order_ok, ext_follow, caught
 
     def _pets(self, pf: PoseFrame, pr: dict) -> bool:
         """2차: 반려동물이 문 주변 영역에 일정 시간 이상 머무르면 True."""
