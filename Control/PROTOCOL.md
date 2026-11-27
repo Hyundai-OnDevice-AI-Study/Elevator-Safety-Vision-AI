@@ -95,44 +95,7 @@ Pi 하트비트(`{"hb":n}`)가 **600 ms** 동안 안 오면 ESP32 는 "Pi 없음
 - Pi 쪽도 ESP32 하트비트가 600 ms 동안 없으면 `DeviceEvent("fault","esp32_link")` 를 상태 머신에 넣는다 → `FAULT`.
   다시 들어오면 `DeviceEvent("fault","clear")`. (주의: 지금 상태 머신의 `clear` 는 모든 장치 고장을 지운다.)
 
-## 6. 지금 펌웨어(`Control/Arduino_car`)에서 바꿔야 할 것
-
-1. **막히는 루프 없애기.** `move_up()`·`move_down()` 의 `while` 과 `door_control()` 의 `delay(2000)` 동안에는 시리얼을 읽지 못한다.
-   → `loop()` 한 번에 조금씩 진행하는 상태 머신으로 바꾼다 (`millis()` 로 시간 확인).
-   ```
-   loop():
-     read_serial_lines()        // 명령·하트비트 처리 (먼저!)
-     update_car()               // CAR_IDLE / CAR_UP / CAR_DOWN : ADC 층 감지, 타임아웃
-     update_door()              // DOOR_CLOSED / DOOR_OPENING / DOOR_OPEN / DOOR_CLOSING : 시간으로 진행
-     check_pi_watchdog()
-     send_heartbeat_if_due()
-     read_buttons()             // 에지 감지 (while 로 떼기 기다리지 않음)
-   ```
-2. **문 상태 정의.** 서보는 위치를 알려주지 않는다. `open`/`closed` 를 무엇으로 볼지 정한다 `[합의 필요]`
-   - 안 A: 각도 명령 후 `DOOR_MOVE_MS`(예: 600 ms) 지나면 도착으로 봄 (센서 없음)
-   - 안 B: 리밋·근접 센서로 확인 (README 의 "열림/닫힘 위치 감지")
-3. **출발 조건.** 출발 버튼 처리에 `!blk && !es && pi_alive && door == CLOSED` 를 넣는다.
-4. **비상정지 래치.** 기존 `fault` 플래그와 별도로 `es` 를 둔다. 비상정지 뒤 카는 층 사이일 수 있다.
-   리셋 뒤 어떻게 할지 `[합의 필요]` (안: 남은 이동을 이어서 하지 않고, 버튼으로 다시 목표 층을 받음. 층 수는 ADC 로 다시 맞춤)
-   층 사이에 선 채로 `door open` 이 오면 열지 말지도 `[합의 필요]` (지금 초안·가짜 ESP32 는 카가 서 있으면 연다.
-   실제 엘리베이터는 층 사이에서 문을 열지 않으므로 `{"ack":n,"ok":0,"err":"between_floors"}` 로 거부하는 안도 있음)
-5. **디버그 출력 앞에 `#`.**
-
-## 7. 시나리오 (펌웨어 검증용)
-
-| # | 상황 | Pi 가 보냄 | ESP32 에서 나와야 하는 줄 |
-|---|---|---|---|
-| 1 | 부팅 | — | `hello` → `door closed` → `car stopped` → 200 ms 마다 `hb` |
-| 2 | 버튼으로 2층 이동 | — | `door closing`·`closed` (닫혀 있으면 생략) → `car moving` → … → `car stopped` → `door open` → (유지 시간 뒤) `door closing` → `door closed` |
-| 3 | 닫히는 중 다시 열기 | `door open` | `ack` → `door open` (유지 시간 다시 셈) |
-| 4 | 이동 중 비상정지 | `car emergency_stop` | `ack` → `car stopped` → `hb` 에 `es:1`. 버튼 눌러도 안 움직임 |
-| 5 | 리셋 | `car emergency_reset` | `ack` → `hb` 에 `es:0`. 저절로 움직이지 않음 |
-| 6 | 출발 보류 | `car block_start` 후 출발 버튼 | `ack`, `hb` 에 `blk:1`, `car moving` 이 **나오지 않음** |
-| 7 | 이동 중 문 열기 | `door open` | `{"ack":n,"ok":0,"err":"car_moving"}` |
-| 8 | 같은 seq 두 번 | 같은 줄 두 번 | ack 두 번, 동작은 한 번 |
-| 9 | Pi 끊김 | 하트비트 멈춤 | 600 ms 뒤 출발 버튼 무시 (서 있을 때) |
-
-## 8. 테스트 도구 (`Control/pi/`)
+## 6. 테스트 도구 (`Control/pi/`)
 
 ```bash
 cd Control/pi
