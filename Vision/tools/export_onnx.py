@@ -27,6 +27,8 @@ def main():
     ap.add_argument("--imgsz", type=int, nargs="+", default=[320])
     ap.add_argument("--opset", type=int, default=None)
     ap.add_argument("--nms-free", action="store_true", help="YOLO26/YOLOv10 의 NMS 없는 head 로 내보내기 (nms=False)")
+    ap.add_argument("--no-slim", action="store_true",
+                    help="onnxslim 정리 없이 변환만 (비교용). 파일명 끝에 _raw 가 붙는다")
     ap.add_argument("--out", default="models")
     a = ap.parse_args()
 
@@ -35,13 +37,13 @@ def main():
     Path(a.out).mkdir(exist_ok=True)
     for sz in a.imgsz:
         m = YOLO(a.model)
-        kw = dict(format="onnx", imgsz=sz, dynamic=False, simplify=True)
+        kw = dict(format="onnx", imgsz=sz, dynamic=False, simplify=not a.no_slim)
         if a.opset:
             kw["opset"] = a.opset
         if a.nms_free:
             kw["nms"] = False
         path = Path(m.export(**kw))
-        dst = Path(a.out) / f"{Path(a.model).stem}_{sz}.onnx"
+        dst = Path(a.out) / f"{Path(a.model).stem}_{sz}{'_raw' if a.no_slim else ''}.onnx"
         shutil.move(str(path), dst)
         print("저장:", dst)
 

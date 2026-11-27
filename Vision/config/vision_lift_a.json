@@ -1,5 +1,5 @@
 {
-  "_comment": "리프트(대차) 영상용 문틈 설정. 대상: lift_entrap_001, lift_entrap_003, lift_entrap_004. 좌표는 0~1 정규화.",
+  "_comment": "리프트(대차) 영상용 문틈 설정. 대상: lift_entrap_001, lift_entrap_002, lift_entrap_003, lift_entrap_004. 좌표는 0~1 정규화.",
   "vision": {
     "video": "",
     "pose_model": "models/yolo11n-pose_320.onnx",
